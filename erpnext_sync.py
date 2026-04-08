@@ -156,7 +156,7 @@ def get_all_attendance_from_device(ip, port=4370, timeout=30, device_id=None, cl
     """
     # Use ZKBio Time API if configured
     if getattr(config, 'USE_ZKBIOTIME_API', False):
-        return get_attendance_from_zkbiotime_api(device_id)
+        return get_attendance_from_zkbiotime_api(device_id, ip=ip)
     
     # Original direct device connection
     zk = ZK(ip, port=port, timeout=timeout)
@@ -192,23 +192,44 @@ def get_all_attendance_from_device(ip, port=4370, timeout=30, device_id=None, cl
     return list(map(lambda x: x.__dict__, attendances))
 
 
-def get_attendance_from_zkbiotime_api(device_id):
+def get_attendance_from_zkbiotime_api(device_id, ip=None):
     """
     Get attendance records from ZKBio Time API instead of direct device connection
-    
+
+    Supports multiple ZKBioTime servers. Each device can optionally specify its own
+    server URL in config via `zkbiotime_url`, `zkbiotime_username`, `zkbiotime_password`.
+    Falls back to global ZKBIOTIME_URL/USERNAME/PASSWORD if not specified.
+
     Args:
         device_id: Device identifier from config
-        
+        ip: Device IP address (used to find device-specific ZKBioTime server config)
+
     Returns:
         List of attendance log dictionaries compatible with erpnext_sync.py
     """
     try:
+        # Resolve ZKBioTime server config: device-specific or global fallback
+        zkbiotime_url = getattr(config, 'ZKBIOTIME_URL', None)
+        zkbiotime_username = getattr(config, 'ZKBIOTIME_USERNAME', None)
+        zkbiotime_password = getattr(config, 'ZKBIOTIME_PASSWORD', None)
+
+        # Check if device has its own ZKBioTime server config
+        if ip:
+            for device in getattr(config, 'devices', []):
+                if device.get('ip') == ip:
+                    zkbiotime_url = device.get('zkbiotime_url', zkbiotime_url)
+                    zkbiotime_username = device.get('zkbiotime_username', zkbiotime_username)
+                    zkbiotime_password = device.get('zkbiotime_password', zkbiotime_password)
+                    break
+
+        if not zkbiotime_url or not zkbiotime_username or not zkbiotime_password:
+            raise Exception(
+                "ZKBioTime credentials not configured. Set USE_ZKBIOTIME_API=True and provide "
+                "ZKBIOTIME_URL, ZKBIOTIME_USERNAME, ZKBIOTIME_PASSWORD in config."
+            )
+
         # Initialize ZKBio Time API connection
-        api = ZKBioTimeAPI(
-            config.ZKBIOTIME_URL,
-            config.ZKBIOTIME_USERNAME,
-            config.ZKBIOTIME_PASSWORD
-        )
+        api = ZKBioTimeAPI(zkbiotime_url, zkbiotime_username, zkbiotime_password)
         
         # Determine date range to fetch
         # Get last sync timestamp to only fetch new records

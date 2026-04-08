@@ -11,29 +11,42 @@ logger = logging.getLogger(__name__)
 
 class ZKBioTimeAPI:
     """Adapter to connect to ZKBio Time server API instead of direct device"""
-    
-    def __init__(self, base_url: str, username: str, password: str):
+
+    def __init__(self, base_url: str, username: str = None, password: str = None, token: str = None):
+        """
+        Initialize ZKBioTime API connection.
+
+        Args:
+            base_url: ZKBioTime server URL (e.g., http://116.58.33.218:81)
+            username: Login username (required if token not provided)
+            password: Login password (required if token not provided)
+            token: Pre-existing auth token (optional, skips authentication)
+        """
         self.base_url = base_url.rstrip('/')
-        self.username = username
-        self.password = password
-        self.token = None
-        self._authenticate()
-    
+        self.token = token
+
+        if not self.token:
+            if not username or not password:
+                raise ValueError("username and password are required when token is not provided")
+            self.username = username
+            self.password = password
+            self._authenticate()
+
     def _authenticate(self):
         """Get authentication token from ZKBio Time"""
         url = f"{self.base_url}/api-token-auth/"
         headers = {"Content-Type": "application/json"}
         data = {"username": self.username, "password": self.password}
-        
+
         response = requests.post(url, json=data, headers=headers, timeout=30)
         response.raise_for_status()
-        
+
         result = response.json()
         self.token = result.get('token')
         if not self.token:
             raise Exception("No token received from ZKBio Time API")
-        
-        logger.info("Successfully authenticated with ZKBio Time API")
+
+        logger.info(f"Successfully authenticated with ZKBio Time API at {self.base_url}")
     
     def _get_headers(self) -> Dict:
         """Get headers with authentication token"""

@@ -123,7 +123,40 @@ ZKBIOTIME_USERNAME = "admin"
 ZKBIOTIME_PASSWORD = "your_password"
 ```
 
-When `USE_ZKBIOTIME_API` is `True`, the tool bypasses direct device connections and fetches all attendance from the ZKBioTime server. The `devices` list in config is still used to map attendance logs to device IDs for shift type sync.
+### Multiple ZKBioTime Servers
+
+If your biometric devices are managed by **different ZKBioTime servers**, each device can specify its own server URL:
+
+```python
+USE_ZKBIOTIME_API = True
+
+devices = [
+    # Old device on one ZKBioTime server
+    {
+        'device_id': 'old_device_1',
+        'ip': '192.168.1.100',
+        'punch_direction': 'AUTO',
+        'clear_from_device_on_fetch': False,
+        'zkbiotime_url': 'http://old-server:81',
+        'zkbiotime_username': 'admin',
+        'zkbiotime_password': 'admin@123',
+    },
+    # New device on a different ZKBioTime server
+    {
+        'device_id': 'new_device_1',
+        'ip': '192.168.2.200',
+        'punch_direction': 'AUTO',
+        'clear_from_device_on_fetch': False,
+        'zkbiotime_url': 'http://new-server:81',
+        'zkbiotime_username': 'admin',
+        'zkbiotime_password': 'different_password',
+    },
+]
+```
+
+Devices without `zkbiotime_url` fall back to the global `ZKBIOTIME_URL`.
+
+When `USE_ZKBIOTIME_API` is `True`, the tool bypasses direct device connections and fetches attendance from the respective ZKBioTime server. The device `ip` field is still used to match config entries to server config.
 
 ### Testing the Connection
 
