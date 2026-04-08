@@ -1,5 +1,6 @@
 local_config.py
 .vscode
+.qwen/
 logs/
 
 # Byte-compiled / optimized / DLL files

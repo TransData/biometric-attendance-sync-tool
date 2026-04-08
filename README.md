@@ -12,6 +12,7 @@ Python Scripts to poll your biometric attendance system _(BAS)_ for logs and syn
     - [UNIX](#unix)
     - [Windows](#windows)
   - [Setting Up Config](#setting-up-config)
+  - [ZKBioTime API Integration](#zkbiotime-api-integration)
   - [Resources](#resources)
   - [License](#license)
 
@@ -93,6 +94,56 @@ Installing as a Windows service
       > For some cases you would have a lot of old punches in the biometric device. But, you would want to only import punches after certain date. You could set this key appropriately. Also, you can leave this as `None` if this case does not apply to you.
 
 > TODO: fill this section with more info to help Non-Technical Individuals.
+
+## ZKBioTime API Integration
+
+This tool supports an alternative mode of fetching attendance data via the **ZKBioTime REST API** instead of connecting directly to biometric devices using the ZK protocol. This is useful when:
+
+- Biometric devices are behind a firewall or NAT and not directly accessible
+- You already use a ZKBioTime server to manage devices centrally
+- You prefer server-side polling over direct device connections
+
+### How It Works
+
+Instead of using `pyzk` to connect to each device individually, the tool queries the ZKBioTime server's API endpoints:
+- `GET /iclock/api/terminals/` — list registered devices
+- `GET /iclock/api/transactions/` — fetch attendance logs with pagination
+
+The adapter (`zkbiotime_adapter.py`) handles authentication, pagination, and converts the response into the standard attendance log format expected by `erpnext_sync.py`.
+
+### Configuration
+
+Add the following to your `local_config.py`:
+
+```python
+# ZKBioTime API Configuration
+USE_ZKBIOTIME_API = True
+ZKBIOTIME_URL = "http://your-zkbiotime-server:port"
+ZKBIOTIME_USERNAME = "admin"
+ZKBIOTIME_PASSWORD = "your_password"
+```
+
+When `USE_ZKBIOTIME_API` is `True`, the tool bypasses direct device connections and fetches all attendance from the ZKBioTime server. The `devices` list in config is still used to map attendance logs to device IDs for shift type sync.
+
+### Testing the Connection
+
+A standalone test script (`test_zkbiotime.py`) is included to verify API connectivity before running the full sync:
+
+```bash
+python test_zkbiotime.py
+```
+
+This will authenticate, list devices, and fetch recent transactions to confirm everything is working.
+
+### Known Limitations
+
+- The adapter fetches **all** transactions across all devices; device-level filtering is done downstream
+- Token re-authentication happens on each instantiation (no caching)
+- No retry logic for transient API failures
+
+These are areas for future improvement.
+
+---
 
 ## To build executable file for GUI
 ### Linux and Windows:

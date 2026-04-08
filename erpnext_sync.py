@@ -11,6 +11,10 @@ from logging.handlers import RotatingFileHandler
 from pickledb import PickleDB
 from zk import ZK, const
 
+# ZKBio Time API adapter (optional - only imported if USE_ZKBIOTIME_API is True)
+if getattr(config, 'USE_ZKBIOTIME_API', False):
+    from zkbiotime_adapter import ZKBioTimeAPI
+
 EMPLOYEE_NOT_FOUND_ERROR_MESSAGE = "No Employee found for the given employee field value"
 EMPLOYEE_INACTIVE_ERROR_MESSAGE = "Transactions cannot be created for an Inactive Employee"
 DUPLICATE_EMPLOYEE_CHECKIN_ERROR_MESSAGE = "This employee already has a log with the same timestamp"
@@ -144,7 +148,17 @@ def pull_process_and_push_data(device, device_attendance_logs=None):
 
 
 def get_all_attendance_from_device(ip, port=4370, timeout=30, device_id=None, clear_from_device_on_fetch=False):
-    #  Sample Attendance Logs [{'punch': 255, 'user_id': '22', 'uid': 12349, 'status': 1, 'timestamp': datetime.datetime(2019, 2, 26, 20, 31, 29)},{'punch': 255, 'user_id': '7', 'uid': 7, 'status': 1, 'timestamp': datetime.datetime(2019, 2, 26, 20, 31, 36)}]
+    """
+    Get attendance records from device or ZKBio Time API
+    
+    If USE_ZKBIOTIME_API is True in config, fetches from ZKBio Time server API.
+    Otherwise, connects directly to the biometric device using ZK protocol.
+    """
+    # Use ZKBio Time API if configured
+    if getattr(config, 'USE_ZKBIOTIME_API', False):
+        return get_attendance_from_zkbiotime_api(device_id)
+    
+    # Original direct device connection
     zk = ZK(ip, port=port, timeout=timeout)
     conn = None
     attendances = []
@@ -178,10 +192,71 @@ def get_all_attendance_from_device(ip, port=4370, timeout=30, device_id=None, cl
     return list(map(lambda x: x.__dict__, attendances))
 
 
+def get_attendance_from_zkbiotime_api(device_id):
+    """
+    Get attendance records from ZKBio Time API instead of direct device connection
+    
+    Args:
+        device_id: Device identifier from config
+        
+    Returns:
+        List of attendance log dictionaries compatible with erpnext_sync.py
+    """
+    try:
+        # Initialize ZKBio Time API connection
+        api = ZKBioTimeAPI(
+            config.ZKBIOTIME_URL,
+            config.ZKBIOTIME_USERNAME,
+            config.ZKBIOTIME_PASSWORD
+        )
+        
+        # Determine date range to fetch
+        # Get last sync timestamp to only fetch new records
+        last_pull_timestamp = _safe_convert_date(status.get(f'{device_id}_pull_timestamp'), "%Y-%m-%d %H:%M:%S.%f")
+        
+        if last_pull_timestamp:
+            start_time = last_pull_timestamp
+        elif config.IMPORT_START_DATE:
+            start_time = _safe_convert_date(config.IMPORT_START_DATE, "%Y%m%d")
+            if not start_time:
+                start_time = datetime.datetime.now() - datetime.timedelta(days=1)
+        else:
+            # Default to last 24 hours if no previous sync
+            start_time = datetime.datetime.now() - datetime.timedelta(days=1)
+        
+        # Fetch until now
+        end_time = datetime.datetime.now()
+        
+        info_logger.info(f"Fetching attendance from ZKBio Time API: {start_time} to {end_time}")
+        
+        # Get all transactions in the date range
+        transactions = api.get_all_transactions(start_time, end_time)
+        
+        # Convert to attendance log format
+        attendance_logs = []
+        for txn in transactions:
+            log = api.transaction_to_attendance_log(txn)
+            if log:
+                attendance_logs.append(log)
+        
+        info_logger.info(f"Fetched {len(attendance_logs)} attendance records from ZKBio Time API")
+        
+        # Update status
+        status.set(f'{device_id}_push_timestamp', None)
+        status.set(f'{device_id}_pull_timestamp', str(datetime.datetime.now()))
+        status.save()
+        
+        return attendance_logs
+        
+    except Exception as e:
+        error_logger.exception(f"Exception when fetching from ZKBio Time API for device {device_id}...")
+        raise Exception(f'ZKBio Time API fetch failed: {str(e)}')
+
+
 def send_to_erpnext(employee_field_value, timestamp, device_id=None, log_type=None, latitude=None, longitude=None):
     """
-    Examples: 
-    
+    Examples:
+
     For ERPNext, Frappe HR <= v14
     send_to_erpnext('12349',datetime.datetime.now(),'HO1','IN')
 
@@ -189,8 +264,16 @@ def send_to_erpnext(employee_field_value, timestamp, device_id=None, log_type=No
     If 'Allow Geolocation Tracking' is on
     send_to_erpnext('12349',datetime.datetime.now(),'HO1','IN',latitude=12.34, longitude=56.78)
     """
-    endpoint_app = "hrms" if ERPNEXT_VERSION > 13 else "erpnext"
-    url = f"{config.ERPNEXT_URL}/api/method/{endpoint_app}.hr.doctype.employee_checkin.employee_checkin.add_log_based_on_employee_field"
+    # Try multiple endpoint patterns for different ERPNext/HRMS versions
+    endpoint_patterns = [
+        # HRMS app (ERPNext v14+)
+        f"{config.ERPNEXT_URL}/api/method/hrms.hr.doctype.employee_checkin.employee_checkin.add_log_based_on_employee_field",
+        # ERPNext built-in HR (v13 and earlier)
+        f"{config.ERPNEXT_URL}/api/method/erpnext.hr.doctype.employee_checkin.employee_checkin.add_log_based_on_employee_field",
+        # Frappe HR standalone
+        f"{config.ERPNEXT_URL}/api/method/hr.doctype.employee_checkin.employee_checkin.add_log_based_on_employee_field",
+    ]
+    
     headers = {
         'Authorization': "token "+ config.ERPNEXT_API_KEY + ":" + config.ERPNEXT_API_SECRET,
         'Accept': 'application/json'
@@ -203,17 +286,34 @@ def send_to_erpnext(employee_field_value, timestamp, device_id=None, log_type=No
         'latitude' : latitude,
         'longitude' : longitude
     }
-    response = requests.request("POST", url, headers=headers, json=data)
-    if response.status_code == 200:
-        return 200, json.loads(response._content)['message']['name']
-    else:
-        error_str = _safe_get_error_str(response)
-        if EMPLOYEE_NOT_FOUND_ERROR_MESSAGE in error_str:
-            error_logger.error('\t'.join(['Error during ERPNext API Call.', str(employee_field_value), str(timestamp.timestamp()), str(device_id), str(log_type), error_str]))
-            # TODO: send email?
-        else:
-            error_logger.error('\t'.join(['Error during ERPNext API Call.', str(employee_field_value), str(timestamp.timestamp()), str(device_id), str(log_type), error_str]))
-        return response.status_code, error_str
+    
+    # Try each endpoint until one works
+    last_error = None
+    for url in endpoint_patterns:
+        try:
+            response = requests.request("POST", url, headers=headers, json=data, timeout=30)
+            if response.status_code == 200:
+                return 200, json.loads(response._content)['message']['name']
+            
+            # Check if it's a known error we should handle
+            error_str = _safe_get_error_str(response)
+            if EMPLOYEE_NOT_FOUND_ERROR_MESSAGE in error_str:
+                error_logger.error('\t'.join(['Error during ERPNext API Call.', str(employee_field_value), str(timestamp.timestamp()), str(device_id), str(log_type), error_str]))
+                return response.status_code, error_str
+            
+            # If it's not a "module not found" error, return it
+            if 'No module named' not in error_str and 'module.*not found' not in error_str.lower():
+                error_logger.error('\t'.join(['Error during ERPNext API Call.', str(employee_field_value), str(timestamp.timestamp()), str(device_id), str(log_type), error_str]))
+                return response.status_code, error_str
+            
+            last_error = error_str
+        except Exception as e:
+            last_error = str(e)
+            continue
+    
+    # All endpoints failed
+    error_logger.error('\t'.join(['Error during ERPNext API Call (all endpoints failed).', str(employee_field_value), str(timestamp.timestamp()), str(device_id), str(log_type), str(last_error)]))
+    return 500, last_error
 
 def update_shift_last_sync_timestamp(shift_type_device_mapping):
     """
