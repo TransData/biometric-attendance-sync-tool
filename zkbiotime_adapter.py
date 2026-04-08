@@ -135,9 +135,13 @@ class ZKBioTimeAPI:
             Dict in format expected by erpnext_sync.py
         """
         # Map punch_state to punch value
-        # ZKBio Time: "0" = Check In, "1" = Check Out
+        # ZKBio Time: "0"=Check In, "1"=Check Out, "2"=Break Out, "3"=Break In
+        # Frappe: 0=IN, 1=OUT
         punch_state = transaction.get('punch_state', '0')
-        punch_value = 0 if punch_state == '0' else 1  # 0=IN, 1=OUT
+        if punch_state in ('0', '3'):
+            punch_value = 0  # Check In / Break In → IN
+        else:
+            punch_value = 1  # Check Out / Break Out → OUT
         
         # Parse punch_time
         punch_time_str = transaction.get('punch_time', '')
